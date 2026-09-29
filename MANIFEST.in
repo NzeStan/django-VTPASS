@@ -1,0 +1,9 @@
+include LICENSE
+include README.md
+include MANIFEST.in
+recursive-include vtpass/templates *
+recursive-include vtpass/static *
+recursive-include docs *
+prune vtpass/static/src
+prune tests
+prune docs/_build
