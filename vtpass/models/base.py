@@ -1,59 +1,29 @@
-"""
-Base models for the VTpass package.
-This module defines abstract base models with common fields.
-"""
+"""Abstract base models."""
 
 import uuid
+
+import django
 from django.db import models
 from django.utils.translation import gettext_lazy as _
 
-from vtpass.settings import vtpass_settings
 
-
-class UUIDModel(models.Model):
-    """
-    Abstract base model with UUID primary key.
-    Used when USE_UUID setting is True.
-    """
-    id = models.UUIDField(
-        primary_key=True,
-        default=uuid.uuid4,
-        editable=False,
-        verbose_name=_('ID')
-    )
-    
-    class Meta:
-        abstract = True
+def check_constraint(condition, name):
+    """``CheckConstraint`` across Django versions (``check=`` became ``condition=`` in 5.1)."""
+    if django.VERSION >= (5, 1):
+        return models.CheckConstraint(condition=condition, name=name)
+    return models.CheckConstraint(check=condition, name=name)
 
 
 class TimeStampedModel(models.Model):
     """
-    Abstract base model with created_at and updated_at fields.
+    Integer primary key for fast joins plus a random public ``uid`` that is
+    safe to expose in URLs and API responses (sequential IDs leak volumes and
+    invite enumeration).
     """
-    created_at = models.DateTimeField(
-        _('Created at'),
-        auto_now_add=True,
-        editable=False
-    )
-    updated_at = models.DateTimeField(
-        _('Updated at'),
-        auto_now=True,
-        editable=False
-    )
-    
+
+    uid = models.UUIDField(_("public ID"), default=uuid.uuid4, unique=True, editable=False)
+    created_at = models.DateTimeField(_("created at"), auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(_("updated at"), auto_now=True)
+
     class Meta:
         abstract = True
-
-
-class BaseModel(TimeStampedModel):
-    """
-    Base model for all VTpass models.
-    This will use UUIDModel if USE_UUID setting is True.
-    """
-    class Meta:
-        abstract = True
-
-
-# Dynamically select the base model based on the settings
-if vtpass_settings.USE_UUID:
-    BaseModel.__bases__ = (UUIDModel,) + BaseModel.__bases__

@@ -1,17 +1,75 @@
 [build-system]
-requires = ["setuptools>=42", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
-[tool.black]
-line-length = 88
-target-version = ['py38']
-include = '\.pyi?$'
+[project]
+name = "django-vtpass"
+dynamic = ["version"]
+description = "The complete VTpass integration for Django: airtime, data, TV, electricity, education, insurance, international airtime and bulk SMS, with wallets, pricing, cashback, webhooks and Celery support."
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "NzeStan", email = "nnamaniifeanyi10@gmail.com" }]
+keywords = [
+    "vtpass", "django", "nigeria", "airtime", "data", "vtu", "bill-payment", "electricity",
+    "dstv", "gotv", "waec", "jamb", "bulk-sms", "fintech", "payments",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Web Environment",
+    "Framework :: Django",
+    "Framework :: Django :: 4.2",
+    "Framework :: Django :: 5.0",
+    "Framework :: Django :: 5.1",
+    "Framework :: Django :: 5.2",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Office/Business :: Financial",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "Django>=4.2",
+    "requests>=2.28",
+]
 
-[tool.isort]
-profile = "black"
-multi_line_output = 3
+[project.optional-dependencies]
+drf = ["djangorestframework>=3.14"]
+celery = ["celery>=5.3"]
+all = ["djangorestframework>=3.14", "celery>=5.3"]
+test = [
+    "djangorestframework>=3.14",
+    "celery>=5.3",
+    "pytest>=7.0",
+    "pytest-django>=4.5",
+    "responses>=0.23",
+    "flake8>=6.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/NzeStan/django-vtpass"
+Documentation = "https://github.com/NzeStan/django-vtpass/tree/main/docs"
+Source = "https://github.com/NzeStan/django-vtpass"
+Issues = "https://github.com/NzeStan/django-vtpass/issues"
+Changelog = "https://github.com/NzeStan/django-vtpass/blob/main/docs/changelog.md"
+
+[tool.setuptools.dynamic]
+version = { attr = "vtpass.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["vtpass*"]
 
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "tests.settings"
 python_files = "test_*.py"
 testpaths = ["tests"]
+
+[tool.isort]
+profile = "black"
+line_length = 120

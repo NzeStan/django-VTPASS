@@ -1,50 +1,40 @@
-"""
-Service serializers for the VTpass API.
-This module defines serializers for Service and ServiceVariation models.
-"""
+from decimal import Decimal
 
 from rest_framework import serializers
 
-from vtpass.models import Service, ServiceVariation
-from vtpass.api.serializers.base import BaseModelSerializer
+from vtpass.models import Service, ServiceCategory, Variation
 
 
-class ServiceVariationSerializer(BaseModelSerializer):
-    """
-    Serializer for the ServiceVariation model.
-    """
+class ServiceCategorySerializer(serializers.ModelSerializer):
     class Meta:
-        model = ServiceVariation
-        fields = [
-            'id', 'name', 'variation_code', 'description',
-            'amount', 'active', 'meta_data', 'created_at', 'updated_at'
-        ]
-        read_only_fields = fields
+        model = ServiceCategory
+        fields = ("identifier", "name")
 
 
-class ServiceSerializer(BaseModelSerializer):
-    """
-    Serializer for the Service model.
-    """
-    service_type_display = serializers.SerializerMethodField()
-    provider_name = serializers.SerializerMethodField()
-    variations = ServiceVariationSerializer(many=True, read_only=True)
-    
+class ServiceSerializer(serializers.ModelSerializer):
+    category = serializers.CharField(source="category.identifier")
+
     class Meta:
         model = Service
-        fields = [
-            'id', 'name', 'service_id', 'service_type', 'service_type_display',
-            'provider', 'provider_name', 'description', 'icon',
-            'requires_verification', 'verification_field',
-            'supports_recurring', 'min_amount', 'max_amount',
-            'active', 'meta_data', 'variations', 'created_at', 'updated_at'
-        ]
-        read_only_fields = fields
-    
-    def get_service_type_display(self, obj):
-        """Get the display value for service_type."""
-        return obj.get_service_type_display()
-    
-    def get_provider_name(self, obj):
-        """Get the provider name."""
-        return obj.provider.name if obj.provider else None
+        fields = ("service_id", "name", "category", "image", "minimum_amount", "maximum_amount", "convenience_fee")
+
+
+class VariationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Variation
+        fields = ("variation_code", "name", "amount", "fixed_price")
+
+
+class VerifySerializer(serializers.Serializer):
+    service_id = serializers.CharField(max_length=64)
+    billers_code = serializers.CharField(max_length=128)
+    type = serializers.CharField(max_length=64, required=False, allow_blank=True)
+
+
+class QuoteRequestSerializer(serializers.Serializer):
+    service_id = serializers.CharField(max_length=64)
+    amount = serializers.DecimalField(max_digits=14, decimal_places=2, required=False, min_value=Decimal("1"))
+    variation_code = serializers.CharField(max_length=128, required=False, allow_blank=True)
+    quantity = serializers.IntegerField(required=False, min_value=1, max_value=100, default=1)
+    operator_id = serializers.CharField(required=False)
+    product_type_id = serializers.CharField(required=False)

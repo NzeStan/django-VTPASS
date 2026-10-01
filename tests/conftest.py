@@ -1,296 +1,102 @@
-"""
-Pytest configuration for the VTpass tests.
-This module provides common fixtures for the VTpass tests.
-"""
+from decimal import Decimal
 
 import pytest
-from decimal import Decimal
+import responses
 from django.contrib.auth import get_user_model
-from django.utils import timezone
+from django.core.cache import cache
 
-from vtpass.models import (
-    Transaction, Service, ServiceVariation, Provider,
-    Commission, CommissionRate, Wallet, WalletTransaction
-)
-from vtpass.constants import ServiceType, TransactionStatus, NetworkProvider
+BASE = "https://sandbox.vtpass.com/api/"
+SMS_BASE = "https://messaging.vtpass.com/"
 
 
-User = get_user_model()
+def pay_body(status="delivered", code="000", amount=100, total_amount=None, commission=None,
+             description="TRANSACTION SUCCESSFUL", **extra):
+    transactions = {
+        "status": status,
+        "product_name": extra.pop("product_name", "MTN Airtime VTU"),
+        "unique_element": "08011111111",
+        "amount": amount,
+        "transactionId": extra.pop("transaction_id", "17415980564672211596777904"),
+    }
+    if total_amount is not None:
+        transactions["total_amount"] = total_amount
+    if commission is not None:
+        transactions["commission"] = commission
+        transactions["commission_details"] = {"amount": commission, "rate": "3.00", "rate_type": "percent"}
+    body = {
+        "code": code,
+        "response_description": description,
+        "content": {"transactions": transactions},
+        "requestId": extra.pop("request_id", "202501011200abc"),
+        "amount": amount,
+    }
+    body.update(extra)
+    return body
 
 
-@pytest.fixture
-def user():
-    """Create a test user."""
-    return User.objects.create_user(
-        username='testuser',
-        email='test@example.com',
-        password='password'
-    )
-
-
-@pytest.fixture
-def admin_user():
-    """Create a test admin user."""
-    return User.objects.create_superuser(
-        username='adminuser',
-        email='admin@example.com',
-        password='password'
-    )
-
-
-@pytest.fixture
-def provider():
-    """Create a test provider."""
-    return Provider.objects.create(
-        name='MTN',
-        code='mtn',
-        service_type=ServiceType.AIRTIME,
-        description='MTN Nigeria'
-    )
+@pytest.fixture(autouse=True)
+def _clear_cache():
+    cache.clear()
+    yield
+    cache.clear()
 
 
 @pytest.fixture
-def service(provider):
-    """Create a test service."""
-    return Service.objects.create(
-        name='MTN Airtime',
-        service_id='mtn',
-        service_type=ServiceType.AIRTIME,
-        provider=provider,
-        description='MTN Airtime',
-        min_amount=Decimal('50'),
-        max_amount=Decimal('50000')
-    )
+def api():
+    with responses.RequestsMock(assert_all_requests_are_fired=False) as mock:
+        yield mock
 
 
 @pytest.fixture
-def service_variation(service):
-    """Create a test service variation."""
-    return ServiceVariation.objects.create(
-        service=service,
-        name='MTN Airtime',
-        variation_code='mtn',
-        description='MTN Airtime',
-        amount=Decimal('100')
-    )
+def user(db):
+    return get_user_model().objects.create_user("ada", "ada@example.com", "pass")
 
 
 @pytest.fixture
-def transaction(service, service_variation, user):
-    """Create a test transaction."""
-    return Transaction.objects.create(
-        reference='test-reference',
-        transaction_id='test-transaction-id',
-        amount=Decimal('100'),
-        status=TransactionStatus.PENDING,
-        service_type=ServiceType.AIRTIME,
-        service=service,
-        service_variation=service_variation,
-        phone='08012345678',
-        email='test@example.com',
-        user=user,
-        customer_data={'provider': 'mtn'}
-    )
+def other_user(db):
+    return get_user_model().objects.create_user("bayo", "bayo@example.com", "pass")
 
 
 @pytest.fixture
-def completed_transaction(service, service_variation, user):
-    """Create a completed test transaction."""
-    return Transaction.objects.create(
-        reference='test-completed-reference',
-        transaction_id='test-completed-transaction-id',
-        amount=Decimal('100'),
-        status=TransactionStatus.COMPLETED,
-        service_type=ServiceType.AIRTIME,
-        service=service,
-        service_variation=service_variation,
-        phone='08012345678',
-        email='test@example.com',
-        user=user,
-        customer_data={'provider': 'mtn'},
-        completed_at=timezone.now()
-    )
+def staff(db):
+    return get_user_model().objects.create_superuser("admin", "admin@example.com", "pass")
 
 
 @pytest.fixture
-def failed_transaction(service, service_variation, user):
-    """Create a failed test transaction."""
-    return Transaction.objects.create(
-        reference='test-failed-reference',
-        transaction_id='test-failed-transaction-id',
-        amount=Decimal('100'),
-        status=TransactionStatus.FAILED,
-        service_type=ServiceType.AIRTIME,
-        service=service,
-        service_variation=service_variation,
-        phone='08012345678',
-        email='test@example.com',
-        user=user,
-        customer_data={'provider': 'mtn'},
-        response_message='Transaction failed'
-    )
+def wallet_backend():
+    from vtpass.wallets import ModelWalletBackend
+
+    return ModelWalletBackend()
 
 
 @pytest.fixture
-def commission_rate():
-    """Create a test commission rate."""
-    return CommissionRate.objects.create(
-        service_type=ServiceType.AIRTIME,
-        rate=Decimal('0.02'),
-        description='Airtime commission rate'
-    )
+def funded_user(user, wallet_backend):
+    wallet_backend.credit(user, Decimal("10000"), reference="fund-1")
+    return user
 
 
 @pytest.fixture
-def commission(transaction, user, commission_rate):
-    """Create a test commission."""
-    return Commission.objects.create(
-        transaction=transaction,
-        amount=Decimal('2'),
-        rate=Decimal('0.02'),
-        user=user,
-        description='Test commission'
-    )
+def vt():
+    from vtpass.services import VTpass
+
+    return VTpass()
 
 
 @pytest.fixture
-def wallet(user):
-    """Create a test wallet."""
-    return Wallet.objects.create(
-        user=user,
-        balance=Decimal('1000')
-    )
-
-
-@pytest.fixture
-def wallet_transaction(wallet):
-    """Create a test wallet transaction."""
-    return WalletTransaction.objects.create(
-        wallet=wallet,
-        amount=Decimal('100'),
-        transaction_type=WalletTransaction.TransactionType.DEPOSIT,
-        description='Test deposit'
-    )
-
-
-@pytest.fixture
-def mock_response_success():
-    """Create a mock successful response."""
-    return {
-        'code': '000',
-        'response_description': 'Success',
-        'requestId': 'test-request-id',
-        'content': {
-            'transactions': {
-                'status': 'delivered',
-                'transactionId': 'test-transaction-id',
-                'product_name': 'MTN Airtime',
-                'unit_price': 100,
-                'quantity': 1,
-                'total_amount': 100,
-                'phone': '08012345678',
-                'email': 'test@example.com',
-                'method': 'api'
-            }
+def mtn_data_variations(api):
+    api.get(
+        BASE + "service-variations",
+        json={
+            "response_description": "000",
+            "content": {
+                "ServiceName": "MTN Data",
+                "serviceID": "mtn-data",
+                "convinience_fee": "0 %",
+                "varations": [
+                    {"variation_code": "mtn-1gb", "name": "MTN 1GB", "variation_amount": "300.00", "fixedPrice": "Yes"},
+                    {"variation_code": "mtn-2gb", "name": "MTN 2GB", "variation_amount": "600.00", "fixedPrice": "Yes"},
+                ],
+            },
         },
-        'transaction_date': {
-            'date': '2023-01-01 12:00:00',
-            'timezone_type': 3,
-            'timezone': 'Africa/Lagos'
-        },
-        'purchased_code': ''
-    }
-
-
-@pytest.fixture
-def mock_response_pending():
-    """Create a mock pending response."""
-    return {
-        'code': '099',
-        'response_description': 'Transaction pending',
-        'requestId': 'test-request-id',
-        'content': {
-            'transactions': {
-                'status': 'pending',
-                'transactionId': 'test-transaction-id',
-                'product_name': 'MTN Airtime',
-                'unit_price': 100,
-                'quantity': 1,
-                'total_amount': 100,
-                'phone': '08012345678',
-                'email': 'test@example.com',
-                'method': 'api'
-            }
-        },
-        'transaction_date': {
-            'date': '2023-01-01 12:00:00',
-            'timezone_type': 3,
-            'timezone': 'Africa/Lagos'
-        },
-        'purchased_code': ''
-    }
-
-
-@pytest.fixture
-def mock_response_failed():
-    """Create a mock failed response."""
-    return {
-        'code': '100',
-        'response_description': 'Transaction failed',
-        'requestId': 'test-request-id',
-        'content': {}
-    }
-
-
-@pytest.fixture
-def mock_service_categories():
-    """Create mock service categories response."""
-    return {
-        'code': '000',
-        'response_description': 'Success',
-        'content': {
-            'services': [
-                {
-                    'serviceID': 'mtn',
-                    'name': 'MTN Airtime',
-                    'serviceType': 'airtime',
-                    'description': 'MTN Airtime',
-                    'minimumAmount': 50,
-                    'maximumAmount': 50000
-                },
-                {
-                    'serviceID': 'mtn-data',
-                    'name': 'MTN Data',
-                    'serviceType': 'data',
-                    'description': 'MTN Data Bundle',
-                    'minimumAmount': 50,
-                    'maximumAmount': 50000
-                }
-            ]
-        }
-    }
-
-
-@pytest.fixture
-def mock_service_variations():
-    """Create mock service variations response."""
-    return {
-        'code': '000',
-        'response_description': 'Success',
-        'content': {
-            'variations': [
-                {
-                    'variation_code': 'mtn-100',
-                    'name': 'MTN 100 MB',
-                    'variation_amount': 100,
-                    'variation_desc': '100 MB data plan'
-                },
-                {
-                    'variation_code': 'mtn-1gb',
-                    'name': 'MTN 1 GB',
-                    'variation_amount': 1000,
-                    'variation_desc': '1 GB data plan'
-                }
-            ]
-        }
-    }
+    )
+    return api

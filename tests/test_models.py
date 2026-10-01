@@ -1,416 +1,152 @@
-"""
-Tests for the VTpass models.
-This module provides tests for the VTpass models.
-"""
+"""Pricing rules and the built-in wallet ledger."""
+
+from datetime import timedelta
+from decimal import Decimal
 
 import pytest
-from decimal import Decimal
-from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
+from django.core.exceptions import ValidationError
+from django.test import override_settings
 from django.utils import timezone
 
-from vtpass.models import (
-    Transaction, Service, ServiceVariation, Provider,
-    Commission, CommissionRate, Wallet, WalletTransaction
-)
-from vtpass.constants import ServiceType, TransactionStatus, NetworkProvider
+from vtpass.exceptions import InsufficientFunds, VTpassTransactionError, VTpassValidationError
+from vtpass.models import PricingRule, Wallet, WalletEntry
+from vtpass.pricing import FlatPricing, RuleBasedPricing
+
+pytestmark = pytest.mark.django_db
 
 
-User = get_user_model()
+def quote(**kwargs):
+    defaults = {"face_value": Decimal("1000"), "service_id": "mtn", "category": "airtime", "variation_code": ""}
+    defaults.update(kwargs)
+    return RuleBasedPricing().quote(**defaults)
 
 
-@pytest.fixture
-def user():
-    """Create a test user."""
-    return User.objects.create_user(
-        username='testuser',
-        email='test@example.com',
-        password='password'
-    )
+class TestPricing:
+    def test_no_rule_means_face_value(self):
+        q = quote()
+        assert (q.fee, q.discount, q.cashback, q.amount_payable) == (0, 0, 0, Decimal("1000.00"))
 
-
-@pytest.fixture
-def provider():
-    """Create a test provider."""
-    return Provider.objects.create(
-        name='MTN',
-        code='mtn',
-        service_type=ServiceType.AIRTIME,
-        description='MTN Nigeria'
-    )
-
-
-@pytest.fixture
-def service(provider):
-    """Create a test service."""
-    return Service.objects.create(
-        name='MTN Airtime',
-        service_id='mtn',
-        service_type=ServiceType.AIRTIME,
-        provider=provider,
-        description='MTN Airtime',
-        min_amount=Decimal('50'),
-        max_amount=Decimal('50000')
-    )
-
-
-@pytest.fixture
-def service_variation(service):
-    """Create a test service variation."""
-    return ServiceVariation.objects.create(
-        service=service,
-        name='MTN Airtime',
-        variation_code='mtn',
-        description='MTN Airtime',
-        amount=Decimal('100')
-    )
-
-
-@pytest.fixture
-def transaction(service, service_variation, user):
-    """Create a test transaction."""
-    return Transaction.objects.create(
-        reference='test-reference',
-        transaction_id='test-transaction-id',
-        amount=Decimal('100'),
-        status=TransactionStatus.PENDING,
-        service_type=ServiceType.AIRTIME,
-        service=service,
-        service_variation=service_variation,
-        phone='08012345678',
-        email='test@example.com',
-        user=user,
-        customer_data={'provider': 'mtn'}
-    )
-
-
-@pytest.fixture
-def commission_rate():
-    """Create a test commission rate."""
-    return CommissionRate.objects.create(
-        service_type=ServiceType.AIRTIME,
-        rate=Decimal('0.02'),
-        description='Airtime commission rate'
-    )
-
-
-@pytest.fixture
-def commission(transaction, user):
-    """Create a test commission."""
-    return Commission.objects.create(
-        transaction=transaction,
-        amount=Decimal('2'),
-        rate=Decimal('0.02'),
-        user=user,
-        description='Test commission'
-    )
-
-
-@pytest.fixture
-def wallet(user):
-    """Create a test wallet."""
-    return Wallet.objects.create(
-        user=user,
-        balance=Decimal('1000')
-    )
-
-
-@pytest.fixture
-def wallet_transaction(wallet):
-    """Create a test wallet transaction."""
-    return WalletTransaction.objects.create(
-        wallet=wallet,
-        amount=Decimal('100'),
-        transaction_type=WalletTransaction.TransactionType.DEPOSIT,
-        description='Test deposit'
-    )
-
-
-class TestProvider:
-    """Tests for the Provider model."""
-    
-    def test_create_provider(self, provider):
-        """Test creating a provider."""
-        assert provider.name == 'MTN'
-        assert provider.code == 'mtn'
-        assert provider.service_type == ServiceType.AIRTIME
-        assert provider.description == 'MTN Nigeria'
-        assert provider.active is True
-        
-    def test_get_by_code(self, provider):
-        """Test getting a provider by code."""
-        found_provider = Provider.get_by_code(provider.code)
-        assert found_provider == provider
-        
-    def test_get_providers_by_service_type(self, provider):
-        """Test getting providers by service type."""
-        providers = Provider.get_providers_by_service_type(ServiceType.AIRTIME)
-        assert provider in providers
-
-
-class TestService:
-    """Tests for the Service model."""
-    
-    def test_create_service(self, service, provider):
-        """Test creating a service."""
-        assert service.name == 'MTN Airtime'
-        assert service.service_id == 'mtn'
-        assert service.service_type == ServiceType.AIRTIME
-        assert service.provider == provider
-        assert service.description == 'MTN Airtime'
-        assert service.min_amount == Decimal('50')
-        assert service.max_amount == Decimal('50000')
-        assert service.active is True
-        
-    def test_get_by_service_id(self, service):
-        """Test getting a service by service ID."""
-        found_service = Service.get_by_service_id(service.service_id)
-        assert found_service == service
-        
-    def test_get_services_by_type(self, service):
-        """Test getting services by type."""
-        services = Service.get_services_by_type(ServiceType.AIRTIME)
-        assert service in services
-        
-    def test_has_variations(self, service, service_variation):
-        """Test checking if a service has variations."""
-        assert service.has_variations() is True
-        
-    def test_get_variations(self, service, service_variation):
-        """Test getting variations for a service."""
-        variations = service.get_variations()
-        assert service_variation in variations
-
-
-class TestServiceVariation:
-    """Tests for the ServiceVariation model."""
-    
-    def test_create_service_variation(self, service_variation, service):
-        """Test creating a service variation."""
-        assert service_variation.service == service
-        assert service_variation.name == 'MTN Airtime'
-        assert service_variation.variation_code == 'mtn'
-        assert service_variation.description == 'MTN Airtime'
-        assert service_variation.amount == Decimal('100')
-        assert service_variation.active is True
-        
-    def test_get_by_code(self, service_variation, service):
-        """Test getting a variation by code."""
-        found_variation = ServiceVariation.get_by_code(
-            service, service_variation.variation_code
+    def test_fee_discount_and_cashback(self):
+        PricingRule.objects.create(
+            name="airtime", category="airtime", fee_type="flat", fee_value=10,
+            discount_type="percent", discount_value=2, cashback_type="percent", cashback_value=1,
         )
-        assert found_variation == service_variation
-        
-    def test_get_variations_for_service(self, service_variation, service):
-        """Test getting variations for a service."""
-        variations = ServiceVariation.get_variations_for_service(service)
-        assert service_variation in variations
+        q = quote()
+        assert q.fee == Decimal("10.00")
+        assert q.discount == Decimal("20.00")
+        assert q.cashback == Decimal("10.00")
+        assert q.amount_payable == Decimal("990.00")
+        assert q.rule["name"] == "airtime"
 
+    def test_most_specific_rule_wins_then_priority(self):
+        PricingRule.objects.create(name="any", discount_value=1)
+        PricingRule.objects.create(name="category", category="airtime", discount_value=2)
+        PricingRule.objects.create(name="service", category="airtime", service_id="mtn", discount_value=3)
+        assert quote().rule["name"] == "service"
+        PricingRule.objects.create(name="promo", discount_value=5, priority=10)
+        assert quote().rule["name"] == "promo"
 
-class TestTransaction:
-    """Tests for the Transaction model."""
-    
-    def test_create_transaction(self, transaction, service, service_variation, user):
-        """Test creating a transaction."""
-        assert transaction.reference == 'test-reference'
-        assert transaction.transaction_id == 'test-transaction-id'
-        assert transaction.amount == Decimal('100')
-        assert transaction.status == TransactionStatus.PENDING
-        assert transaction.service_type == ServiceType.AIRTIME
-        assert transaction.service == service
-        assert transaction.service_variation == service_variation
-        assert transaction.phone == '08012345678'
-        assert transaction.email == 'test@example.com'
-        assert transaction.user == user
-        assert transaction.customer_data == {'provider': 'mtn'}
-        
-    def test_is_pending(self, transaction):
-        """Test checking if a transaction is pending."""
-        assert transaction.is_pending is True
-        assert transaction.is_completed is False
-        assert transaction.is_failed is False
-        assert transaction.is_reversed is False
-        
-    def test_is_completed(self, transaction):
-        """Test checking if a transaction is completed."""
-        transaction.status = TransactionStatus.COMPLETED
-        transaction.save()
-        assert transaction.is_pending is False
-        assert transaction.is_completed is True
-        assert transaction.is_failed is False
-        assert transaction.is_reversed is False
-        
-    def test_get_by_reference(self, transaction):
-        """Test getting a transaction by reference."""
-        found_transaction = Transaction.get_by_reference(transaction.reference)
-        assert found_transaction == transaction
-        
-    def test_get_by_transaction_id(self, transaction):
-        """Test getting a transaction by transaction ID."""
-        found_transaction = Transaction.get_by_transaction_id(transaction.transaction_id)
-        assert found_transaction == transaction
-        
-    def test_get_user_transactions(self, transaction, user):
-        """Test getting transactions for a user."""
-        transactions = Transaction.get_user_transactions(user)
-        assert transaction in transactions
-        
-    def test_get_transactions_by_service_type(self, transaction):
-        """Test getting transactions by service type."""
-        transactions = Transaction.get_transactions_by_service_type(ServiceType.AIRTIME)
-        assert transaction in transactions
+    def test_rule_scopes(self):
+        PricingRule.objects.create(name="glo only", service_id="glo", discount_value=3)
+        PricingRule.objects.create(name="big tickets", min_amount=5000, cashback_value=2)
+        assert quote().rule is None
+        assert quote(face_value=Decimal("6000")).rule["name"] == "big tickets"
 
+    def test_time_window_and_inactive(self):
+        now = timezone.now()
+        PricingRule.objects.create(name="expired", discount_value=5, ends_at=now - timedelta(days=1))
+        PricingRule.objects.create(name="future", discount_value=5, starts_at=now + timedelta(days=1))
+        PricingRule.objects.create(name="off", discount_value=5, is_active=False)
+        assert quote().rule is None
 
-class TestCommissionRate:
-    """Tests for the CommissionRate model."""
-    
-    def test_create_commission_rate(self, commission_rate):
-        """Test creating a commission rate."""
-        assert commission_rate.service_type == ServiceType.AIRTIME
-        assert commission_rate.rate == Decimal('0.02')
-        assert commission_rate.rate_percentage == 2
-        assert commission_rate.description == 'Airtime commission rate'
-        assert commission_rate.active is True
-        
-    def test_get_rate_for_service_type(self, commission_rate):
-        """Test getting a rate for a service type."""
-        rate = CommissionRate.get_rate_for_service_type(ServiceType.AIRTIME)
-        assert rate == Decimal('0.02')
-        
-    def test_calculate_commission(self, commission_rate):
-        """Test calculating a commission."""
-        amount = Decimal('100')
-        commission = CommissionRate.calculate_commission(amount, ServiceType.AIRTIME)
-        assert commission == Decimal('2')
+    def test_user_group_pricing_for_agents(self, user):
+        agents = Group.objects.create(name="agents")
+        PricingRule.objects.create(name="retail", discount_value=1)
+        PricingRule.objects.create(name="agents", user_group=agents, discount_value=3)
+        assert quote(user=user).rule["name"] == "retail"
+        user.groups.add(agents)
+        assert quote(user=user).rule["name"] == "agents"
+        assert quote(user=user).discount == Decimal("30.00")
 
+    def test_caps_and_discount_never_exceeds_face_value(self):
+        PricingRule.objects.create(name="cap", discount_type="flat", discount_value=5000, cashback_value=10,
+                                   cashback_cap=50)
+        q = quote()
+        assert q.discount == Decimal("1000.00") and q.amount_payable == Decimal("0.00")
+        assert q.cashback == Decimal("50.00")
 
-class TestCommission:
-    """Tests for the Commission model."""
-    
-    def test_create_commission(self, commission, transaction, user):
-        """Test creating a commission."""
-        assert commission.transaction == transaction
-        assert commission.amount == Decimal('2')
-        assert commission.rate == Decimal('0.02')
-        assert commission.rate_percentage == 2
-        assert commission.user == user
-        assert commission.is_paid is False
-        assert commission.paid_at is None
-        assert commission.description == 'Test commission'
-        
-    def test_get_unpaid_commissions(self, commission):
-        """Test getting unpaid commissions."""
-        commissions = Commission.get_unpaid_commissions()
-        assert commission in commissions
-        
-    def test_get_total_commission(self, commission):
-        """Test getting total commission."""
-        total = Commission.get_total_commission()
-        assert total == Decimal('2')
-        
-    def test_create_from_transaction(self, transaction, commission_rate, user):
-        """Test creating a commission from a transaction."""
-        # Delete the existing commission to avoid unique constraint violation
-        Commission.objects.all().delete()
-        
-        commission = Commission.create_from_transaction(transaction)
-        assert commission.transaction == transaction
-        assert commission.amount == Decimal('2')
-        assert commission.rate == Decimal('0.02')
-        assert commission.user == user
+    def test_settings_rules_used_when_no_db_rule(self):
+        rules = [{"name": "electricity fee", "category": "electricity-bill", "fee_type": "flat", "fee_value": "100"}]
+        with override_settings(VTPASS={"PRICING_RULES": rules}):
+            q = quote(category="electricity-bill", service_id="ikeja-electric")
+        assert q.fee == Decimal("100.00") and q.amount_payable == Decimal("1100.00")
+
+    def test_cashback_can_be_disabled(self):
+        PricingRule.objects.create(name="cb", cashback_value=5)
+        with override_settings(VTPASS={"CASHBACK_ENABLED": False}):
+            assert quote().cashback == 0
+
+    def test_flat_pricing(self):
+        assert FlatPricing().quote(face_value=Decimal("50")).amount_payable == Decimal("50.00")
+
+    def test_rule_validation(self):
+        with pytest.raises(ValidationError):
+            PricingRule(name="bad", discount_type="percent", discount_value=150).clean()
+        with pytest.raises(ValidationError):
+            PricingRule(name="bad", min_amount=10, max_amount=5).clean()
 
 
 class TestWallet:
-    """Tests for the Wallet model."""
-    
-    def test_create_wallet(self, wallet, user):
-        """Test creating a wallet."""
-        assert wallet.user == user
-        assert wallet.balance == Decimal('1000')
-        assert wallet.active is True
-        
-    def test_get_or_create_for_user(self, user):
-        """Test getting or creating a wallet for a user."""
-        # Delete the existing wallet to test creation
-        Wallet.objects.filter(user=user).delete()
-        
-        wallet = Wallet.get_or_create_for_user(user)
-        assert wallet.user == user
-        assert wallet.balance == Decimal('0')
-        assert wallet.active is True
-        
-    def test_deposit(self, wallet):
-        """Test depositing funds into a wallet."""
-        initial_balance = wallet.balance
-        transaction = wallet.deposit(Decimal('100'), 'Test deposit')
-        
-        # Refresh the wallet from the database
-        wallet.refresh_from_db()
-        
-        assert wallet.balance == initial_balance + Decimal('100')
-        assert transaction.wallet == wallet
-        assert transaction.amount == Decimal('100')
-        assert transaction.transaction_type == WalletTransaction.TransactionType.DEPOSIT
-        assert transaction.description == 'Test deposit'
-        assert wallet.last_deposit_at is not None
-        
-    def test_withdraw(self, wallet):
-        """Test withdrawing funds from a wallet."""
-        initial_balance = wallet.balance
-        transaction = wallet.withdraw(Decimal('100'), 'Test withdrawal')
-        
-        # Refresh the wallet from the database
-        wallet.refresh_from_db()
-        
-        assert wallet.balance == initial_balance - Decimal('100')
-        assert transaction.wallet == wallet
-        assert transaction.amount == Decimal('100')
-        assert transaction.transaction_type == WalletTransaction.TransactionType.WITHDRAWAL
-        assert transaction.description == 'Test withdrawal'
-        assert wallet.last_withdrawal_at is not None
-        
-    def test_withdraw_insufficient_balance(self, wallet):
-        """Test withdrawing with insufficient balance."""
-        with pytest.raises(ValueError, match='Insufficient balance'):
-            wallet.withdraw(Decimal('2000'), 'Test withdrawal')
-            
-    def test_get_transactions(self, wallet, wallet_transaction):
-        """Test getting transactions for a wallet."""
-        transactions = wallet.get_transactions()
-        assert wallet_transaction in transactions
+    def test_credit_and_debit(self, user, wallet_backend):
+        wallet_backend.credit(user, Decimal("500"), reference="f1")
+        entry = wallet_backend.debit(user, Decimal("200"), reference="d1")
+        assert wallet_backend.balance(user) == Decimal("300.00")
+        assert (entry.balance_before, entry.balance_after) == (Decimal("500.00"), Decimal("300.00"))
 
+    def test_insufficient_funds(self, user, wallet_backend):
+        wallet_backend.credit(user, Decimal("100"), reference="f1")
+        with pytest.raises(InsufficientFunds):
+            wallet_backend.debit(user, Decimal("100.01"), reference="d1")
+        assert wallet_backend.balance(user) == Decimal("100.00")
+        assert not WalletEntry.objects.filter(reference="d1").exists()
 
-class TestWalletTransaction:
-    """Tests for the WalletTransaction model."""
-    
-    def test_create_wallet_transaction(self, wallet_transaction, wallet):
-        """Test creating a wallet transaction."""
-        assert wallet_transaction.wallet == wallet
-        assert wallet_transaction.amount == Decimal('100')
-        assert wallet_transaction.transaction_type == WalletTransaction.TransactionType.DEPOSIT
-        assert wallet_transaction.description == 'Test deposit'
-        
-    def test_is_deposit(self, wallet_transaction):
-        """Test checking if a transaction is a deposit."""
-        assert wallet_transaction.is_deposit is True
-        assert wallet_transaction.is_withdrawal is False
-        
-    def test_is_withdrawal(self, wallet_transaction):
-        """Test checking if a transaction is a withdrawal."""
-        wallet_transaction.transaction_type = WalletTransaction.TransactionType.WITHDRAWAL
-        wallet_transaction.save()
-        
-        assert wallet_transaction.is_deposit is False
-        assert wallet_transaction.is_withdrawal is True
-        
-    def test_get_by_reference(self, wallet_transaction):
-        """Test getting a transaction by reference."""
-        wallet_transaction.reference = 'test-reference'
-        wallet_transaction.save()
-        
-        found_transaction = WalletTransaction.get_by_reference(wallet_transaction.reference)
-        assert found_transaction == wallet_transaction
-        
-    def test_get_user_transactions(self, wallet_transaction, user):
-        """Test getting transactions for a user."""
-        transactions = WalletTransaction.get_user_transactions(user)
-        assert wallet_transaction in transactions
+    def test_reference_is_idempotent(self, user, wallet_backend):
+        first = wallet_backend.credit(user, Decimal("100"), reference="same")
+        again = wallet_backend.credit(user, Decimal("100"), reference="same")
+        assert first.pk == again.pk
+        assert wallet_backend.balance(user) == Decimal("100.00")
+
+    def test_reference_reuse_with_different_amount_rejected(self, user, wallet_backend):
+        wallet_backend.credit(user, Decimal("100"), reference="same")
+        with pytest.raises(VTpassTransactionError):
+            wallet_backend.credit(user, Decimal("999"), reference="same")
+
+    def test_locked_wallet_cannot_be_debited(self, user, wallet_backend):
+        wallet_backend.credit(user, Decimal("100"), reference="f1")
+        Wallet.objects.filter(user=user).update(is_locked=True)
+        with pytest.raises(InsufficientFunds):
+            wallet_backend.debit(user, Decimal("10"), reference="d1")
+
+    def test_non_positive_amounts_rejected(self, user, wallet_backend):
+        with pytest.raises(VTpassValidationError):
+            wallet_backend.credit(user, Decimal("0"), reference="zero")
+
+    def test_wallet_signals(self, user, wallet_backend, django_capture_on_commit_callbacks):
+        from vtpass import signals
+
+        seen = []
+        handler = lambda sender, wallet, entry, **kw: seen.append(entry.reference)  # noqa: E731
+        signals.wallet_credited.connect(handler)
+        try:
+            with django_capture_on_commit_callbacks(execute=True):
+                wallet_backend.credit(user, Decimal("5"), reference="sig")
+        finally:
+            signals.wallet_credited.disconnect(handler)
+        assert seen == ["sig"]
+
+    def test_fund_wallet_helper(self, user):
+        from vtpass.wallets import fund_wallet, wallet_balance
+
+        fund_wallet(user, "2500", reference="paystack-ref-1")
+        assert wallet_balance(user) == Decimal("2500.00")

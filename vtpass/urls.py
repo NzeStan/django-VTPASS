@@ -1,35 +1,20 @@
 """
-URL configuration for the VTpass package.
-This module defines URL patterns for the VTpass package.
+Webhook URLs (no DRF required)::
+
+    path("vtpass/", include("vtpass.urls"))
+
+The optional REST API lives in ``vtpass.api.urls``::
+
+    path("api/vtpass/", include("vtpass.api.urls"))
 """
 
-from django.urls import path, include
-from django.contrib import admin
+from django.urls import path
 
-from vtpass.api.urls import router as api_router
+from vtpass import views
 
+app_name = "vtpass"
 
-app_name = 'vtpass'
-
-# URLs for admin dashboard (if needed beyond Django admin)
-dashboard_urlpatterns = [
-    # Add custom dashboard views here if needed
-]
-
-# URLs for webhook handlers
-webhook_urlpatterns = [
-    # Add webhook handlers here if needed
-    # path('webhook/', views.webhook_handler, name='webhook'),
-]
-
-# Main URL patterns
 urlpatterns = [
-    # API URLs
-    path('api/', include(api_router.urls)),
-    
-    # Dashboard URLs
-    path('dashboard/', include((dashboard_urlpatterns, 'dashboard'))),
-    
-    # Webhook URLs
-    path('webhooks/', include((webhook_urlpatterns, 'webhooks'))),
+    path("webhook/", views.webhook, name="webhook"),
+    path("webhook/<str:token>/", views.webhook, name="webhook-token"),
 ]

@@ -1,64 +1,39 @@
-"""
-Permissions for the VTpass API.
-This module defines custom permissions for the VTpass API.
-"""
+"""Permission and throttle classes, configurable through ``VTPASS["API"]``."""
 
-from rest_framework import permissions
+from django.utils.module_loading import import_string
+from rest_framework.throttling import UserRateThrottle
 
-
-class IsOwnerOrStaff(permissions.BasePermission):
-    """
-    Custom permission to only allow owners of an object or staff to access it.
-    """
-    def has_object_permission(self, request, view, obj):
-        """
-        Check if the user has permission to access the object.
-        
-        Args:
-            request: The request object
-            view: The view object
-            obj: The object to check permission for
-            
-        Returns:
-            bool: True if the user has permission, False otherwise
-        """
-        # Staff can access anything
-        if request.user.is_staff:
-            return True
-            
-        # Check if the object has a user attribute
-        if hasattr(obj, 'user'):
-            return obj.user == request.user
-            
-        # Check if the object has a wallet attribute with a user
-        if hasattr(obj, 'wallet') and hasattr(obj.wallet, 'user'):
-            return obj.wallet.user == request.user
-            
-        # Check if the object has a transaction attribute with a user
-        if hasattr(obj, 'transaction') and hasattr(obj.transaction, 'user'):
-            return obj.transaction.user == request.user
-            
-        return False
+from vtpass.settings import vtpass_settings
 
 
-class IsAdminOrReadOnly(permissions.BasePermission):
-    """
-    Custom permission to only allow admin users to edit objects.
-    """
-    def has_permission(self, request, view):
-        """
-        Check if the user has permission to access the view.
-        
-        Args:
-            request: The request object
-            view: The view object
-            
-        Returns:
-            bool: True if the user has permission, False otherwise
-        """
-        # Read permissions are allowed to any authenticated user
-        if request.method in permissions.SAFE_METHODS:
-            return request.user.is_authenticated
-            
-        # Write permissions are only allowed to admin users
-        return request.user.is_staff
+def _load(paths):
+    return [import_string(p) if isinstance(p, str) else p for p in paths]
+
+
+def default_permissions():
+    return _load(vtpass_settings.API["PERMISSION_CLASSES"])
+
+
+def admin_permissions():
+    return _load(vtpass_settings.API["ADMIN_PERMISSION_CLASSES"])
+
+
+class _SettingsRateThrottle(UserRateThrottle):
+    setting = None
+
+    def get_rate(self):
+        return vtpass_settings.API.get(self.setting)
+
+
+class PurchaseRateThrottle(_SettingsRateThrottle):
+    """Limits purchases per user (``VTPASS["API"]["PURCHASE_THROTTLE_RATE"]``)."""
+
+    scope = "vtpass_purchase"
+    setting = "PURCHASE_THROTTLE_RATE"
+
+
+class VerifyRateThrottle(_SettingsRateThrottle):
+    """Limits customer lookups, which cost nothing to call and are easy to abuse."""
+
+    scope = "vtpass_verify"
+    setting = "VERIFY_THROTTLE_RATE"

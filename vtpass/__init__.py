@@ -1,10 +1,28 @@
 """
-Django VTpass package - A comprehensive integration with VTpass API.
+django-vtpass: the complete VTpass integration for Django.
+
+    from vtpass.services import VTpass
+    vt = VTpass()
+    vt.airtime.buy("08011111111", 100, user=request.user)
 """
 
-__version__ = '0.1.0'
-default_app_config = 'vtpass.apps.VTpassConfig'
+__version__ = "1.0.0"
 
-# Import for easier access from other modules
-from vtpass.client import VTpassClient
-from vtpass.exceptions import VTpassError, VTpassAPIError
+__all__ = ["VTpass", "VTpassClient", "MessagingClient", "__version__"]
+
+
+def __getattr__(name):
+    # Lazy imports keep `import vtpass` cheap and safe before Django is set up.
+    if name == "VTpass":
+        from vtpass.services import VTpass
+
+        return VTpass
+    if name == "VTpassClient":
+        from vtpass.client import VTpassClient
+
+        return VTpassClient
+    if name == "MessagingClient":
+        from vtpass.messaging import MessagingClient
+
+        return MessagingClient
+    raise AttributeError(f"module 'vtpass' has no attribute {name!r}")

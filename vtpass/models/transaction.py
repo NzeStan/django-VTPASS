@@ -1,253 +1,169 @@
-"""
-Transaction model for the VTpass package.
-This module defines the Transaction model for tracking VTpass transactions.
-"""
+"""The transaction ledger: one row per purchase sent (or about to be sent) to VTpass."""
 
+from datetime import timedelta
+from decimal import Decimal
+
+from django.conf import settings
+from django.core.serializers.json import DjangoJSONEncoder
 from django.db import models
-from django.contrib.auth import get_user_model
+from django.db.models import Q, Sum
+from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
-from vtpass.models.base import BaseModel
-from vtpass.models.service import Service, ServiceVariation
-from vtpass.constants import TransactionStatus, ServiceType
+from vtpass.constants import Status
+from vtpass.models.base import TimeStampedModel, check_constraint
 
-User = get_user_model()
+MONEY = {"max_digits": 14, "decimal_places": 2}
 
 
-class Transaction(BaseModel):
-    """
-    Model for VTpass transactions.
-    Each transaction represents a payment for a service through VTpass.
-    """
-    # Basic transaction information
-    reference = models.CharField(
-        _('Reference'),
-        max_length=100,
-        unique=True,
-        help_text=_('Unique transaction reference')
-    )
-    transaction_id = models.CharField(
-        _('Transaction ID'),
-        max_length=100,
-        null=True,
-        blank=True,
-        help_text=_('VTpass transaction ID')
-    )
-    amount = models.DecimalField(
-        _('Amount'),
-        max_digits=12,
-        decimal_places=2,
-        help_text=_('Transaction amount')
-    )
-    status = models.CharField(
-        _('Status'),
-        max_length=20,
-        choices=TransactionStatus.CHOICES,
-        default=TransactionStatus.PENDING,
-        help_text=_('Transaction status')
-    )
-    
-    # Service information
-    service_type = models.CharField(
-        _('Service Type'),
-        max_length=20,
-        choices=ServiceType.CHOICES,
-        help_text=_('Type of service')
-    )
-    service = models.ForeignKey(
-        Service,
-        verbose_name=_('Service'),
-        on_delete=models.PROTECT,
-        related_name='transactions',
-        help_text=_('Service for this transaction')
-    )
-    service_variation = models.ForeignKey(
-        ServiceVariation,
-        verbose_name=_('Service Variation'),
-        on_delete=models.PROTECT,
-        related_name='transactions',
-        null=True,
-        blank=True,
-        help_text=_('Service variation for this transaction')
-    )
-    
-    # Customer information
-    phone = models.CharField(
-        _('Phone'),
-        max_length=20,
-        help_text=_('Customer phone number')
-    )
-    email = models.EmailField(
-        _('Email'),
-        blank=True,
-        help_text=_('Customer email address')
-    )
-    customer_data = models.JSONField(
-        _('Customer Data'),
-        default=dict,
-        blank=True,
-        help_text=_('Additional customer data')
-    )
-    
-    # Verification information
-    verification_code = models.CharField(
-        _('Verification Code'),
-        max_length=100,
-        blank=True,
-        help_text=_('Verification code (meter number, smartcard number, etc.)')
-    )
-    
-    # Response information
-    response_data = models.JSONField(
-        _('Response Data'),
-        default=dict,
-        blank=True,
-        help_text=_('Response data from VTpass API')
-    )
-    response_message = models.TextField(
-        _('Response Message'),
-        blank=True,
-        help_text=_('Response message from VTpass API')
-    )
-    
-    # User information (optional, can be null for anonymous transactions)
+class TransactionQuerySet(models.QuerySet):
+    def for_user(self, user):
+        return self.filter(user=user)
+
+    def open(self):
+        return self.filter(status__in=Status.open())
+
+    def successful(self):
+        return self.filter(status=Status.SUCCESSFUL)
+
+    def due_for_requery(self, now=None):
+        now = now or timezone.now()
+        return self.open().filter(Q(next_requery_at__isnull=True) | Q(next_requery_at__lte=now))
+
+    def counting_towards_limits(self):
+        return self.exclude(status__in=(Status.FAILED, Status.REVERSED))
+
+    def today(self):
+        start = timezone.localtime().replace(hour=0, minute=0, second=0, microsecond=0)
+        return self.filter(created_at__gte=start)
+
+    def totals(self):
+        return self.aggregate(
+            face_value=Sum("amount"),
+            charged=Sum("amount_charged"),
+            cost=Sum("cost"),
+            fees=Sum("fee"),
+            discounts=Sum("discount"),
+            cashback=Sum("cashback"),
+            vtpass_commission=Sum("vtpass_commission"),
+        )
+
+
+class Transaction(TimeStampedModel):
+    # --- who --------------------------------------------------------------------
     user = models.ForeignKey(
-        User,
-        verbose_name=_('User'),
-        on_delete=models.SET_NULL,
-        related_name='vtpass_transactions',
-        null=True,
-        blank=True,
-        help_text=_('User who initiated the transaction')
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="vtpass_transactions", verbose_name=_("user"),
     )
-    
-    # Additional information
-    callback_url = models.URLField(
-        _('Callback URL'),
-        blank=True,
-        help_text=_('URL to call when transaction status changes')
+    # --- identifiers ----------------------------------------------------------------
+    request_id = models.CharField(_("VTpass request ID"), max_length=64, unique=True)
+    idempotency_key = models.CharField(_("idempotency key"), max_length=128, null=True, blank=True)
+    vtpass_transaction_id = models.CharField(_("VTpass transaction ID"), max_length=64, blank=True, db_index=True)
+    # --- what ---------------------------------------------------------------------
+    category = models.CharField(_("category"), max_length=64, blank=True, db_index=True)
+    service_id = models.CharField(_("service ID"), max_length=64, db_index=True)
+    variation_code = models.CharField(_("variation code"), max_length=128, blank=True)
+    product_name = models.CharField(_("product name"), max_length=255, blank=True)
+    billers_code = models.CharField(_("billers code"), max_length=128, blank=True, db_index=True,
+                                    help_text=_("Phone, meter, smartcard, profile ID... being paid for."))
+    phone = models.CharField(_("phone"), max_length=32, blank=True)
+    email = models.EmailField(_("email"), blank=True)
+    quantity = models.PositiveIntegerField(_("quantity"), default=1)
+    # --- money ------------------------------------------------------------------------
+    amount = models.DecimalField(_("face value"), **MONEY, help_text=_("Value sent to VTpass."))
+    fee = models.DecimalField(_("convenience fee"), **MONEY, default=Decimal("0"))
+    discount = models.DecimalField(_("discount"), **MONEY, default=Decimal("0"))
+    amount_charged = models.DecimalField(_("amount charged"), **MONEY,
+                                         help_text=_("What the customer paid: face value + fee - discount."))
+    cashback = models.DecimalField(_("cashback"), **MONEY, default=Decimal("0"))
+    cashback_paid = models.BooleanField(_("cashback paid"), default=False)
+    cost = models.DecimalField(_("cost"), **MONEY, null=True, blank=True,
+                               help_text=_("What VTpass debited from the merchant wallet (total_amount)."))
+    vtpass_commission = models.DecimalField(_("VTpass commission"), **MONEY, null=True, blank=True)
+    vtpass_commission_details = models.JSONField(
+        _("VTpass commission details"), default=dict, blank=True, encoder=DjangoJSONEncoder
     )
-    meta_data = models.JSONField(
-        _('Meta Data'),
-        default=dict,
-        blank=True,
-        help_text=_('Additional transaction metadata')
-    )
-    
-    # Completed timestamp
-    completed_at = models.DateTimeField(
-        _('Completed At'),
-        null=True,
-        blank=True,
-        help_text=_('When the transaction was completed')
-    )
-    
+    pricing = models.JSONField(_("pricing snapshot"), default=dict, blank=True, encoder=DjangoJSONEncoder)
+    currency = models.CharField(_("currency"), max_length=3, default="NGN")
+    # --- wallet bookkeeping -------------------------------------------------------------
+    wallet_charged = models.BooleanField(_("wallet charged"), default=False)
+    refunded = models.BooleanField(_("refunded"), default=False)
+    refund_amount = models.DecimalField(_("refund amount"), **MONEY, default=Decimal("0"))
+    # --- outcome --------------------------------------------------------------------
+    status = models.CharField(_("status"), max_length=16, choices=Status.choices,
+                              default=Status.INITIATED, db_index=True)
+    response_code = models.CharField(_("response code"), max_length=8, blank=True)
+    response_description = models.CharField(_("response description"), max_length=255, blank=True)
+    error_message = models.TextField(_("error message"), blank=True)
+    purchased_code = models.TextField(_("purchased code"), blank=True,
+                                      help_text=_("Token, PIN or voucher text returned by VTpass."))
+    vend_details = models.JSONField(_("vend details"), default=dict, blank=True, encoder=DjangoJSONEncoder)
+    payload = models.JSONField(_("request payload"), default=dict, blank=True, encoder=DjangoJSONEncoder)
+    response = models.JSONField(_("last response"), default=dict, blank=True, encoder=DjangoJSONEncoder)
+    # --- context --------------------------------------------------------------------
+    channel = models.CharField(_("channel"), max_length=32, blank=True)
+    client_ip = models.GenericIPAddressField(_("client IP"), null=True, blank=True)
+    metadata = models.JSONField(_("metadata"), default=dict, blank=True, encoder=DjangoJSONEncoder)
+    # --- requery bookkeeping -----------------------------------------------------------
+    requery_count = models.PositiveIntegerField(_("requery count"), default=0)
+    last_requeried_at = models.DateTimeField(_("last requeried at"), null=True, blank=True)
+    next_requery_at = models.DateTimeField(_("next requery at"), null=True, blank=True)
+    completed_at = models.DateTimeField(_("completed at"), null=True, blank=True)
+
+    objects = TransactionQuerySet.as_manager()
+
     class Meta:
-        verbose_name = _('Transaction')
-        verbose_name_plural = _('Transactions')
-        ordering = ['-created_at']
+        verbose_name = _("transaction")
+        verbose_name_plural = _("transactions")
+        ordering = ("-created_at",)
         indexes = [
-            models.Index(fields=['reference']),
-            models.Index(fields=['transaction_id']),
-            models.Index(fields=['status']),
-            models.Index(fields=['service_type']),
-            models.Index(fields=['created_at']),
-            models.Index(fields=['completed_at']),
+            models.Index(fields=("status", "next_requery_at"), name="vtpass_txn_requery_idx"),
+            models.Index(fields=("user", "-created_at"), name="vtpass_txn_user_idx"),
         ]
-    
+        constraints = [
+            models.UniqueConstraint(
+                fields=("user", "idempotency_key"),
+                condition=Q(idempotency_key__isnull=False),
+                name="vtpass_unique_idempotency_key",
+            ),
+            check_constraint(
+                Q(amount__gte=0) & Q(amount_charged__gte=0), "vtpass_txn_non_negative_amounts"
+            ),
+        ]
+        permissions = [
+            ("requery_transaction", "Can requery transactions"),
+            ("send_sms", "Can send SMS through VTpass messaging"),
+            ("view_merchant_balance", "Can view the VTpass merchant balance"),
+        ]
+
     def __str__(self):
-        return f"{self.reference} - {self.get_status_display()}"
-    
+        return f"{self.service_id} {self.billers_code or self.phone} {self.amount} [{self.status}]"
+
     @property
-    def is_completed(self):
-        """Check if the transaction is completed."""
-        return self.status == TransactionStatus.COMPLETED
-    
+    def reference(self):
+        return self.request_id
+
     @property
-    def is_pending(self):
-        """Check if the transaction is pending."""
-        return self.status == TransactionStatus.PENDING
-    
+    def is_open(self):
+        return self.status in Status.open()
+
     @property
-    def is_failed(self):
-        """Check if the transaction is failed."""
-        return self.status == TransactionStatus.FAILED
-    
+    def is_successful(self):
+        return self.status == Status.SUCCESSFUL
+
     @property
-    def is_reversed(self):
-        """Check if the transaction is reversed."""
-        return self.status == TransactionStatus.REVERSED
-    
-    @property
-    def service_name(self):
-        """Get the service name."""
-        return self.service.name
-    
-    @property
-    def variation_name(self):
-        """Get the variation name."""
-        if self.service_variation:
-            return self.service_variation.name
-        return None
-    
-    @classmethod
-    def get_by_reference(cls, reference):
-        """
-        Get a transaction by its reference.
-        
-        Args:
-            reference (str): The transaction reference
-            
-        Returns:
-            Transaction: The transaction instance or None if not found
-        """
-        try:
-            return cls.objects.get(reference=reference)
-        except cls.DoesNotExist:
+    def profit(self):
+        """Merchant margin: what the customer paid minus VTpass cost and cashback given."""
+        if self.cost is None or self.status != Status.SUCCESSFUL:
             return None
-    
-    @classmethod
-    def get_by_transaction_id(cls, transaction_id):
-        """
-        Get a transaction by its VTpass transaction ID.
-        
-        Args:
-            transaction_id (str): The VTpass transaction ID
-            
-        Returns:
-            Transaction: The transaction instance or None if not found
-        """
-        try:
-            return cls.objects.get(transaction_id=transaction_id)
-        except cls.DoesNotExist:
-            return None
-    
-    @classmethod
-    def get_user_transactions(cls, user, **filters):
-        """
-        Get all transactions for a specific user.
-        
-        Args:
-            user (User): The user instance
-            **filters: Additional filters
-            
-        Returns:
-            QuerySet: A queryset of transactions
-        """
-        return cls.objects.filter(user=user, **filters).order_by('-created_at')
-    
-    @classmethod
-    def get_transactions_by_service_type(cls, service_type, **filters):
-        """
-        Get all transactions for a specific service type.
-        
-        Args:
-            service_type (str): The service type
-            **filters: Additional filters
-            
-        Returns:
-            QuerySet: A queryset of transactions
-        """
-        return cls.objects.filter(
-            service_type=service_type, **filters
-        ).order_by('-created_at')
+        return self.amount_charged - self.cost - (self.cashback if self.cashback_paid else Decimal("0"))
+
+    @property
+    def token(self):
+        return self.vend_details.get("token") or self.vend_details.get("mainToken") or None
+
+    def schedule_next_requery(self, schedule, now=None):
+        now = now or timezone.now()
+        index = min(self.requery_count, len(schedule) - 1) if schedule else 0
+        delay = schedule[index] if schedule else 300
+        self.next_requery_at = now + timedelta(seconds=delay)

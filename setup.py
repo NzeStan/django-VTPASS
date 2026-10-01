@@ -1,9 +1,4 @@
-#!/usr/bin/env python
-from setuptools import setup, find_packages
+# Configuration lives in pyproject.toml; this shim only supports legacy tooling.
+from setuptools import setup
 
-if __name__ == "__main__":
-    setup(
-        packages=find_packages(),
-        include_package_data=True,
-        package_data={'': ['*.html', '*.md', '*.txt']},
-    )
+setup()

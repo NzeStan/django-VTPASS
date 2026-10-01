@@ -1,25 +1,20 @@
-"""
-Models for the VTpass package.
-This module imports all models for easier access.
-"""
-
-from vtpass.models.base import BaseModel, TimeStampedModel, UUIDModel
+from vtpass.models.beneficiary import Beneficiary
+from vtpass.models.commission import PricingRule
+from vtpass.models.service import Service, ServiceCategory, Variation
+from vtpass.models.sms import SMSMessage
 from vtpass.models.transaction import Transaction
-from vtpass.models.service import Service, ServiceVariation
-from vtpass.models.provider import Provider
-from vtpass.models.commission import Commission, CommissionRate
-from vtpass.models.wallet import Wallet, WalletTransaction
+from vtpass.models.wallet import Wallet, WalletEntry
+from vtpass.models.webhook import WebhookEvent
 
 __all__ = [
-    'BaseModel',
-    'TimeStampedModel',
-    'UUIDModel',
-    'Transaction',
-    'Service',
-    'ServiceVariation',
-    'Provider',
-    'Commission',
-    'CommissionRate',
-    'Wallet',
-    'WalletTransaction',
+    "Beneficiary",
+    "PricingRule",
+    "SMSMessage",
+    "Service",
+    "ServiceCategory",
+    "Transaction",
+    "Variation",
+    "Wallet",
+    "WalletEntry",
+    "WebhookEvent",
 ]
