@@ -9,6 +9,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false  # report every Python/Django combination, not just the first failure
       matrix:
         include:
           - python: "3.10"
